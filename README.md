@@ -15,7 +15,7 @@ Proveer una interfaz web interactiva usando Gradio
 
 ## Arquitectura del sistema
 El sistema sigue un pipeline estructurado:
-`Imagen CXR → Enhancement → Segmentación pulmonar → Clasificación → Score-CAM → Visualización`
+- `Imagen CXR → Enhancement → Segmentación pulmonar → Clasificación → Score-CAM → Visualización`
 
 ## Tecnologías utilizadas
 - Deep Learning
@@ -28,17 +28,16 @@ NumPy
 - Visualización / UI
 Gradio
 - Modelos implementados
-Clasificador: DenseNet169
-Segmentación:
-U-Net
-Attention U-Net
+Clasificador: `DenseNet169`
+/ Segmentación:
+`Attention U-Net`
 
 ## Estructura del proyecto
-- app.py Interfaz web con Gradio
-- train.py Entrenamiento + pipeline completo
-- classifier_model.py Carga del modelo DenseNet
-- generate_cam_grid.py Generación de grillas Score-CAM
-- unet_model.py Arquitectura U-Net
+- `app.py` Interfaz web con Gradio
+- `train.py` Entrenamiento + pipeline completo
+- `classifier_model.py` Carga del modelo DenseNet
+- `generate_cam_grid.py` Generación de grillas Score-CAM
+- `unet_model.py` Arquitectura U-Net
 
 ## Modelos utilizados
 1. Clasificador (DenseNet169)
