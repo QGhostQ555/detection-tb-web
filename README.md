@@ -49,11 +49,8 @@ Threshold optimizado durante entrenamiento
 
 2. Segmentación pulmonar
 Se implementan dos enfoques:
-- ✔ Heurístico
-Umbralización + morfología
 Fallback automático
-- ✔ Deep Learning
-U-Net
+- Deep Learning
 Attention U-Net (mejor rendimiento)
 `NeuralLungSegmentationEnhancer(...)`
 
