@@ -60,18 +60,6 @@ Usa mapas de activación del modelo
 Filtrado por cuantiles de activación
 `cam = ScoreCAM(...)`
 
-## Preprocesamiento (Enhancement)
-El sistema incluye múltiples técnicas:
-
-CLAHE (ecualización adaptativa)
-Gamma correction
-Histogram Equalization
-BCET
-Unsharp Mask
-
-Ejemplo:
-`--enhancement-mode clahe_gamma`
-
 ## Cómo ejecutar el proyecto
 Instalar dependencias
 `pip install torch torchvision gradio opencv-python pillow numpy scikit-learn`
