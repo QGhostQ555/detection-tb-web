@@ -85,12 +85,6 @@ python app.py
 - `tb_prob`
 - `resultado`
 
-## Ejecutar CAM grid
-
-```bash
-python generate_cam_grid.py --image-path ruta/a/cxr.png --model-path models/densenet_169_tb_best.pt
-```
-
 ## Modelos esperados en `models/`
 
 - `densenet_169_tb_best.pt`
