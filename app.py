@@ -9,7 +9,12 @@ from PIL import Image
 from torchvision import transforms
 
 from classifier_model import load_classifier
-from train import NeuralLungSegmentationEnhancer, ScoreCAM, _overlay_cam_on_gray
+from train import (
+    NeuralLungSegmentationEnhancer,
+    ScoreCAM,
+    _overlay_cam_on_gray,
+    build_enhancer,
+)
 
 
 def get_device():
@@ -39,6 +44,14 @@ cam = ScoreCAM(
     activation_quantile=0.70,
 )
 
+enhancement_mode = clf.get("enhancement_mode", "clahe_gamma")
+enhancer = build_enhancer(
+    mode=enhancement_mode,
+    clahe_clip_limit=clf.get("clahe_clip_limit", 2.0),
+    clahe_tile_grid=clf.get("clahe_tile_grid", 8),
+    gamma=clf.get("gamma", 1.1),
+)
+
 _transform = transforms.Compose([
     transforms.Resize((clf["img_size"], clf["img_size"])),
     transforms.Lambda(lambda x: x.convert("RGB")),
@@ -47,21 +60,30 @@ _transform = transforms.Compose([
 ])
 
 
-def _predict_one(img: Image.Image) -> Tuple[Image.Image, Image.Image, Image.Image, float, str]:
-    gray_np = np.array(img.convert("L"), dtype=np.uint8)
-    full_mask = lung_seg.predict_mask(gray_np)
-    lung_pil = lung_seg(img)
+def _predict_one(
+    img: Image.Image,
+) -> Tuple[Image.Image, Image.Image, Image.Image, Image.Image, float, str]:
+    # 1) CLAHE+Gamma
+    enhanced_pil = enhancer(img.convert("L")) if enhancer is not None else img.convert("L")
+    enhanced_np = np.array(enhanced_pil.convert("L"), dtype=np.uint8)
 
+    # 2) Segmentacion pulmonar sobre imagen mejorada
+    full_mask = lung_seg.predict_mask(enhanced_np)
+    lung_pil = lung_seg(enhanced_pil)
+
+    # 3) Clasificacion
     input_tensor = _transform(lung_pil).unsqueeze(0).to(device)
     with torch.no_grad():
         logits = clf["model"](input_tensor)
         probs = torch.softmax(logits, 1)[0]
     tb_prob = float(probs[clf["tb_index"]])
 
+    # 4) Score-CAM
     target_size = (clf["img_size"], clf["img_size"])
     mask_resized = cv2.resize(full_mask, target_size, interpolation=cv2.INTER_NEAREST)
     cam_map = cam.compute(input_tensor, class_idx=clf["tb_index"], region_mask=mask_resized)
 
+    gray_np = np.array(img.convert("L"), dtype=np.uint8)
     overlay_rgb = _overlay_cam_on_gray(
         gray=gray_np,
         cam_map=cam_map,
@@ -74,42 +96,47 @@ def _predict_one(img: Image.Image) -> Tuple[Image.Image, Image.Image, Image.Imag
     )
 
     result = "TB" if tb_prob >= clf["threshold"] else "NORMAL"
-    return img, lung_pil, Image.fromarray(overlay_rgb), tb_prob, result
+    return img, enhanced_pil, lung_pil, Image.fromarray(overlay_rgb), tb_prob, result
 
 
 def predict_single(img: Image.Image):
     if img is None:
-        return None, None, None, "Sin imagen"
-    o, l, c, p, r = _predict_one(img)
-    return o, l, c, f"TB probability: {p:.3f}\nResult: {r}"
+        return None, None, None, None, "Sin imagen"
+    o, e, l, c, p, r = _predict_one(img)
+    return o, e, l, c, (
+        f"Pipeline: CLAHE+Gamma -> Segmentacion pulmonar -> Clasificacion -> Score-CAM\n"
+        f"Enhancement mode: {enhancement_mode}\n"
+        f"TB probability: {p:.3f}\nResult: {r}"
+    )
 
 
 def predict_batch(files: List[str]):
     if not files:
-        return [], [], [], []
+        return [], [], [], [], []
 
-    originals, segmented, cams = [], [], []
+    originals, enhanced, segmented, cams = [], [], [], []
     rows = []
     for path in files:
         try:
             img = Image.open(path).convert("RGB")
-            o, l, c, p, r = _predict_one(img)
+            o, e, l, c, p, r = _predict_one(img)
             originals.append(o)
+            enhanced.append(e)
             segmented.append(l)
             cams.append(c)
             rows.append([os.path.basename(path), f"{p:.4f}", r])
         except Exception as ex:
             rows.append([os.path.basename(path), "ERROR", str(ex)])
 
-    return originals, segmented, cams, rows
+    return originals, enhanced, segmented, cams, rows
 
 
 def clear_single():
-    return None, None, None, "Sin imagen"
+    return None, None, None, None, "Sin imagen"
 
 
 def clear_batch():
-    return [], [], [], []
+    return [], [], [], [], []
 
 
 if __name__ == "__main__":
@@ -122,15 +149,17 @@ if __name__ == "__main__":
                 run_one = gr.Button("Procesar Imagen", variant="primary")
                 clear_one = gr.Button("Limpiar")
             with gr.Row():
-                out_o = gr.Image(label="Original", height=300)
-                out_l = gr.Image(label="Lung Segmented", height=300)
+                out_o = gr.Image(label="Original", height=220)
+                out_e = gr.Image(label="CLAHE+Gamma", height=220)
             with gr.Row():
-                out_c = gr.Image(label="Score-CAM", height=300)
+                out_l = gr.Image(label="Lung Segmented", height=220)
+                out_c = gr.Image(label="Score-CAM", height=220)
+            with gr.Row():
                 out_t = gr.Textbox(label="Diagnosis", lines=12, max_lines=12)
 
-            run_one.click(predict_single, [in_img], [out_o, out_l, out_c, out_t])
-            in_img.change(predict_single, [in_img], [out_o, out_l, out_c, out_t])
-            clear_one.click(clear_single, [], [out_o, out_l, out_c, out_t])
+            run_one.click(predict_single, [in_img], [out_o, out_e, out_l, out_c, out_t])
+            in_img.change(predict_single, [in_img], [out_o, out_e, out_l, out_c, out_t])
+            clear_one.click(clear_single, [], [out_o, out_e, out_l, out_c, out_t])
 
         with gr.Tab("Lote multiples imagenes"):
             in_files = gr.File(
@@ -143,9 +172,10 @@ if __name__ == "__main__":
                 run_batch = gr.Button("Procesar Lote", variant="primary")
                 clear_batch_btn = gr.Button("Limpiar lote")
 
-            out_go = gr.Gallery(label="Originales", columns=4, height=260)
-            out_gl = gr.Gallery(label="Lung Segmented", columns=4, height=260)
-            out_gc = gr.Gallery(label="Score-CAM", columns=4, height=260)
+            out_go = gr.Gallery(label="Originales", columns=4, height=210)
+            out_ge = gr.Gallery(label="CLAHE+Gamma", columns=4, height=210)
+            out_gl = gr.Gallery(label="Lung Segmented", columns=4, height=210)
+            out_gc = gr.Gallery(label="Score-CAM", columns=4, height=210)
             out_table = gr.Dataframe(
                 headers=["archivo", "tb_prob", "resultado"],
                 datatype=["str", "str", "str"],
@@ -153,8 +183,8 @@ if __name__ == "__main__":
                 label="Resumen por imagen",
             )
 
-            run_batch.click(predict_batch, [in_files], [out_go, out_gl, out_gc, out_table])
-            in_files.change(predict_batch, [in_files], [out_go, out_gl, out_gc, out_table])
-            clear_batch_btn.click(clear_batch, [], [out_go, out_gl, out_gc, out_table])
+            run_batch.click(predict_batch, [in_files], [out_go, out_ge, out_gl, out_gc, out_table])
+            in_files.change(predict_batch, [in_files], [out_go, out_ge, out_gl, out_gc, out_table])
+            clear_batch_btn.click(clear_batch, [], [out_go, out_ge, out_gl, out_gc, out_table])
 
     demo.launch()
