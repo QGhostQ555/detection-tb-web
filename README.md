@@ -1,78 +1,115 @@
 # Detection TB Web
 
-Sistema de detección automática de tuberculosis (TB) en radiografías de tórax (CXR) utilizando Deep Learning, con segmentación pulmonar y explicabilidad visual mediante Score-CAM.
+Aplicacion web para deteccion de Tuberculosis (TB) en radiografias de torax (CXR).
+Pipeline principal: `CLAHE+Gamma -> Segmentacion pulmonar -> Clasificacion -> Score-CAM`.
 
-## Descripción del proyecto
-Este proyecto implementa una solución completa de inteligencia artificial para:
+## 1. Que hace proyecto
 
-### Clasificar radiografías de tórax en:
-- 🟩 NORMAL
-- 🟥 TB
-- Mejorar imágenes médicas mediante técnicas de procesamiento
-Segmentar automáticamente la región pulmonar
-Generar mapas de activación (heatmaps) para explicar decisiones del modelo
-Proveer una interfaz web interactiva usando Gradio
+Proyecto toma imagen CXR, mejora contraste con `CLAHE+Gamma`, enfoca region pulmonar con segmentador U-Net, clasifica `TB` vs `NORMAL` con DenseNet169, luego genera mapa explicativo Score-CAM.
 
-## Arquitectura del sistema
-El sistema sigue un pipeline estructurado:
-- `Imagen CXR → Enhancement → Segmentación pulmonar → Clasificación → Score-CAM → Visualización`
+Salida visual:
+- Original
+- Imagen segmentada pulmon
+- Score-CAM superpuesto
+- Probabilidad TB + decision final
 
-## Tecnologías utilizadas
-- Deep Learning
-PyTorch
-Torchvision (DenseNet169)
-- Procesamiento de imágenes
-OpenCV
-PIL (Pillow)
-NumPy
-- Visualización / UI
-Gradio
-- Modelos implementados
-Clasificador: `DenseNet169`
-/ Segmentación:
-`Attention U-Net`
+## 2. Tecnologias usadas
 
-## Estructura del proyecto
-- `app.py` Interfaz web con Gradio
-- `train.py` Entrenamiento + pipeline completo
-- `classifier_model.py` Carga del modelo DenseNet
-- `generate_cam_grid.py` Generación de grillas Score-CAM
-- `unet_model.py` Arquitectura U-Net
+- Python 3.10+
+- PyTorch / Torchvision
+- OpenCV
+- NumPy
+- Pillow
+- Gradio
+- scikit-learn (entrenamiento/evaluacion)
 
-## Modelos utilizados
-1. Clasificador (DenseNet169)
-Se carga desde checkpoint con:
-`model = models.densenet169(weights=None)`
-Adaptado a número de clases dinámico
-Usa normalización personalizada (mean, std)
-Threshold optimizado durante entrenamiento
+## 3. Flujo tecnico
 
-2. Segmentación pulmonar
-Se implementan dos enfoques:
-Fallback automático
-- Deep Learning
-Attention U-Net (mejor rendimiento)
-`NeuralLungSegmentationEnhancer(...)`
+1. Cargar imagen (single o lote).
+2. Segmentacion pulmonar (Attention U-Net, con fallback heuristico si aplica).
+3. Clasificacion DenseNet169 sobre imagen segmentada.
+4. Explicabilidad con Score-CAM.
+5. Render UI con resultados por imagen.
 
-3. Explicabilidad (Score-CAM)
-Implementación personalizada
-Usa mapas de activación del modelo
-Filtrado por cuantiles de activación
-`cam = ScoreCAM(...)`
+## 4. Estructura de archivos `.py`
 
-## Cómo ejecutar el proyecto
-Instalar dependencias
-`pip install torch torchvision gradio opencv-python pillow numpy scikit-learn`
+### [app.py](/F:/dataset/detection-tb-web/app.py)
+Interfaz web Gradio.
+- Tab `Imagen unica`.
+- Tab `Lote multiples imagenes` para subir varias fotos.
+- Soporte drag/drop en ambos tabs.
+- Procesamiento automatico al cambiar imagen/archivos.
+- Ejecuta pipeline completo de inferencia y muestra galerias + tabla resumen.
 
-Ejecutar la aplicación web
-`python app.py`
+### [classifier_model.py](/F:/dataset/detection-tb-web/classifier_model.py)
+Carga checkpoint clasificador DenseNet169.
+- Reconstruye capa final segun cantidad de clases guardada.
+- Devuelve metadata: `img_size`, `threshold`, `mean`, `std`, `tb_index`.
 
-## Funcionamiento de la predicción
-Pipeline en predict():
+### [train.py](/F:/dataset/detection-tb-web/train.py)
+Script principal de entrenamiento y utilidades de inferencia/explicabilidad.
+Incluye:
+- Segmentacion pulmonar (heuristica, U-Net, Attention U-Net).
+- Modelos clasificadores y entrenamiento supervisado.
+- Seleccion de threshold (politicas WHO-TPP/strict/balanced).
+- Score-CAM y utilidades de visualizacion.
+- Generacion de grilla comparativa de CAM.
 
-Segmentación pulmonar
-Transformación de imagen
-Clasificación
-Generación de Score-CAM
-Overlay del mapa sobre la imagen
-`resultado = "🟥 TB" if tb_prob >= clf["threshold"] else "🟩 NORMAL"`
+### [generate_cam_grid.py](/F:/dataset/detection-tb-web/generate_cam_grid.py)
+Script para generar imagen comparativa de Score-CAM con varias tecnicas de enhancement.
+Usa modelo entrenado sin reentrenar.
+
+### [unet_model.py](/F:/dataset/detection-tb-web/unet_model.py)
+Definiciones de arquitectura U-Net / Attention U-Net usadas para segmentacion pulmonar.
+
+## 5. Requisitos e instalacion
+
+```bash
+pip install torch torchvision gradio opencv-python pillow numpy scikit-learn
+```
+
+## 6. Ejecutar aplicacion web
+
+```bash
+python app.py
+```
+
+Abrira interfaz local con dos modos:
+- Imagen unica
+- Lote multiples imagenes
+
+## 7. Procesamiento por lote
+
+En tab `Lote multiples imagenes`:
+1. Arrastrar varias imagenes o seleccionar archivos.
+2. Click `Procesar lote` o procesado automatico al cambiar lista.
+3. Ver galerias por etapa (`Original`, `Lung Segmented`, `Score-CAM`).
+4. Ver tabla final con `archivo`, `tb_prob`, `resultado`.
+
+## 8. Entrenamiento clasificador
+
+Ejemplo:
+
+```bash
+python train.py \
+  --data-dir data_prepared_mixed \
+  --epochs 50 \
+  --batch-size 16 \
+  --img-size 380 \
+  --lung-segmentation-mode attention_unet \
+  --threshold-policy balanced
+```
+
+## 9. Generar CAM grid
+
+```bash
+python generate_cam_grid.py \
+  --image-path ruta/a/imagen.png \
+  --model-path models/densenet_169_tb_best.pt
+```
+
+## 10. Notas importantes
+
+- Proyecto es apoyo tecnico, no reemplaza diagnostico medico clinico.
+- Calidad depende de dominio de datos y calidad de CXR.
+- Casos fuera distribucion pueden degradar segmentacion y clasificacion.

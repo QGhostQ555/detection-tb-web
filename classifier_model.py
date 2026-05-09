@@ -18,4 +18,8 @@ def load_classifier(path, device):
         "mean": ckpt["mean"],
         "std": ckpt["std"],
         "tb_index": ckpt["tb_index_train"],
+        "enhancement_mode": ckpt.get("enhancement_mode", "clahe_gamma"),
+        "clahe_clip_limit": ckpt.get("clahe_clip_limit", 2.0),
+        "clahe_tile_grid": ckpt.get("clahe_tile_grid", 8),
+        "gamma": ckpt.get("gamma", 1.1),
     }

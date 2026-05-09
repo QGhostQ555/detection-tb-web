@@ -1,20 +1,17 @@
-import torch
-import gradio as gr
-from PIL import Image
-import numpy as np
+import os
+from typing import List, Tuple
+
 import cv2
+import gradio as gr
+import numpy as np
+import torch
+from PIL import Image
 from torchvision import transforms
 
 from classifier_model import load_classifier
-from train import (
-    NeuralLungSegmentationEnhancer,
-    ScoreCAM,
-    _overlay_cam_on_gray,
-)
+from train import NeuralLungSegmentationEnhancer, ScoreCAM, _overlay_cam_on_gray
 
-# --------------------------------------------------------------------------
-# 1. Carga de modelos (igual que antes, pero con gestión de advertencias)
-# --------------------------------------------------------------------------
+
 def get_device():
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -24,14 +21,14 @@ def get_device():
     except ImportError:
         return torch.device("cpu")
 
-device = get_device()
 
+device = get_device()
 clf = load_classifier("models/densenet_169_tb_best.pt", device)
 
 lung_seg = NeuralLungSegmentationEnhancer(
     checkpoint_path="models/lung_attention_unet_best.pt",
     outside_scale=0.08,
-    fallback="heuristic"
+    fallback="heuristic",
 )
 
 cam = ScoreCAM(
@@ -42,7 +39,6 @@ cam = ScoreCAM(
     activation_quantile=0.70,
 )
 
-# Transformación que se aplicará a la imagen segmentada antes de clasificar
 _transform = transforms.Compose([
     transforms.Resize((clf["img_size"], clf["img_size"])),
     transforms.Lambda(lambda x: x.convert("RGB")),
@@ -50,60 +46,115 @@ _transform = transforms.Compose([
     transforms.Normalize(mean=clf["mean"], std=clf["std"]),
 ])
 
-# --------------------------------------------------------------------------
-# 2. Función de predicción (con redimensionado explícito de la máscara)
-# --------------------------------------------------------------------------
-def predict(img):
-    # --- 2.1 Segmentación pulmonar ---
-    gray_np = np.array(img.convert("L"))
-    full_mask = lung_seg.predict_mask(gray_np)                     # tamaño original
-    lung_pil = lung_seg(img)                                       # imagen atenuada
 
-    # --- 2.2 Preprocesamiento para el clasificador ---
+def _predict_one(img: Image.Image) -> Tuple[Image.Image, Image.Image, Image.Image, float, str]:
+    gray_np = np.array(img.convert("L"), dtype=np.uint8)
+    full_mask = lung_seg.predict_mask(gray_np)
+    lung_pil = lung_seg(img)
+
     input_tensor = _transform(lung_pil).unsqueeze(0).to(device)
-
-    # --- 2.3 Clasificación ---
     with torch.no_grad():
         logits = clf["model"](input_tensor)
         probs = torch.softmax(logits, 1)[0]
     tb_prob = float(probs[clf["tb_index"]])
 
-    # --- 2.4 Score‑CAM (¡la máscara debe coincidir con el tamaño del modelo!) ---
-    target_size = (clf["img_size"], clf["img_size"])  # (380, 380)
+    target_size = (clf["img_size"], clf["img_size"])
     mask_resized = cv2.resize(full_mask, target_size, interpolation=cv2.INTER_NEAREST)
-
     cam_map = cam.compute(input_tensor, class_idx=clf["tb_index"], region_mask=mask_resized)
 
-    # --- 2.5 Superposición sobre la imagen original ---
     overlay_rgb = _overlay_cam_on_gray(
         gray=gray_np,
         cam_map=cam_map,
-        restrict_mask=mask_resized,    # aquí también usamos la máscara redimensionada
-        sigma=7.0, low_pct=12.0, high_pct=99.5,
-        threshold=0.08, alpha=0.55,
+        restrict_mask=mask_resized,
+        sigma=7.0,
+        low_pct=12.0,
+        high_pct=99.5,
+        threshold=0.08,
+        alpha=0.55,
     )
 
-    # --- 2.6 Diagnóstico final ---
-    resultado = "🟥 TB" if tb_prob >= clf["threshold"] else "🟩 NORMAL"
-    return (
-        img,
-        lung_pil,                         # ← PIL Image directamente
-        Image.fromarray(overlay_rgb),     # ← array NumPy → PIL
-        f"TB probability: {tb_prob:.3f}\nResult: {resultado}",
-    )
+    result = "TB" if tb_prob >= clf["threshold"] else "NORMAL"
+    return img, lung_pil, Image.fromarray(overlay_rgb), tb_prob, result
 
-# --------------------------------------------------------------------------
-# 3. Interfaz Gradio
-# --------------------------------------------------------------------------
+
+def predict_single(img: Image.Image):
+    if img is None:
+        return None, None, None, "Sin imagen"
+    o, l, c, p, r = _predict_one(img)
+    return o, l, c, f"TB probability: {p:.3f}\nResult: {r}"
+
+
+def predict_batch(files: List[str]):
+    if not files:
+        return [], [], [], []
+
+    originals, segmented, cams = [], [], []
+    rows = []
+    for path in files:
+        try:
+            img = Image.open(path).convert("RGB")
+            o, l, c, p, r = _predict_one(img)
+            originals.append(o)
+            segmented.append(l)
+            cams.append(c)
+            rows.append([os.path.basename(path), f"{p:.4f}", r])
+        except Exception as ex:
+            rows.append([os.path.basename(path), "ERROR", str(ex)])
+
+    return originals, segmented, cams, rows
+
+
+def clear_single():
+    return None, None, None, "Sin imagen"
+
+
+def clear_batch():
+    return [], [], [], []
+
+
 if __name__ == "__main__":
-    gr.Interface(
-        fn=predict,
-        inputs=gr.Image(type="pil"),
-        outputs=[
-            gr.Image(label="Original"),
-            gr.Image(label="Lung Segmented"),
-            gr.Image(label="Score-CAM"),
-            gr.Text(label="Diagnosis"),
-        ],
-        title="TB Detection with Lung Segmentation & Score-CAM",
-    ).launch()
+    with gr.Blocks(title="TB Detection Web") as demo:
+        gr.Markdown("# TB Detection Web")
+
+        with gr.Tab("Imagen unica"):
+            in_img = gr.Image(type="pil", label="Arrastra imagen (reemplaza actual)")
+            with gr.Row():
+                run_one = gr.Button("Procesar Imagen", variant="primary")
+                clear_one = gr.Button("Limpiar")
+            with gr.Row():
+                out_o = gr.Image(label="Original", height=300)
+                out_l = gr.Image(label="Lung Segmented", height=300)
+            with gr.Row():
+                out_c = gr.Image(label="Score-CAM", height=300)
+                out_t = gr.Textbox(label="Diagnosis", lines=12, max_lines=12)
+
+            run_one.click(predict_single, [in_img], [out_o, out_l, out_c, out_t])
+            in_img.change(predict_single, [in_img], [out_o, out_l, out_c, out_t])
+            clear_one.click(clear_single, [], [out_o, out_l, out_c, out_t])
+
+        with gr.Tab("Lote multiples imagenes"):
+            in_files = gr.File(
+                file_count="multiple",
+                file_types=["image"],
+                type="filepath",
+                label="Arrastra varias imagenes (nuevo arrastre reemplaza lote)",
+            )
+            with gr.Row():
+                run_batch = gr.Button("Procesar Lote", variant="primary")
+                clear_batch_btn = gr.Button("Limpiar lote")
+
+            out_go = gr.Gallery(label="Originales", columns=4, height=260)
+            out_gl = gr.Gallery(label="Lung Segmented", columns=4, height=260)
+            out_gc = gr.Gallery(label="Score-CAM", columns=4, height=260)
+            out_table = gr.Dataframe(
+                headers=["archivo", "tb_prob", "resultado"],
+                datatype=["str", "str", "str"],
+                interactive=False,
+                label="Resumen por imagen",
+            )
+
+            run_batch.click(predict_batch, [in_files], [out_go, out_gl, out_gc, out_table])
+            in_files.change(predict_batch, [in_files], [out_go, out_gl, out_gc, out_table])
+            clear_batch_btn.click(clear_batch, [], [out_go, out_gl, out_gc, out_table])
+
+    demo.launch()
